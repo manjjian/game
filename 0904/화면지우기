@@ -1,0 +1,36 @@
+구분 : 커서의 위치제어함수
+Visual c++ : #include<stdiv.h> sysetm("cls");
+Turbo C/c++ : #include <sonio.h> clrscr();
+
+
+#include<stdio.h>
+#include<stdlib.h>
+intmain(void)
+{
+  charch;
+  printf("문자를입력하고Enter>");
+  scanf("%c", &ch);
+  system("cls");
+  printf("입력된문자%c\n", ch);
+  return0;
+}
+
+
+
+
+#include<stdio.h>
+#include<stdlib.h>
+#include<conio.h>
+intmain(void)
+{
+  int i, j;
+  for(j=1;j<=9;j++)
+{
+  system("cls");
+  for(i=1;i<=9;i++)
+  printf("%d*%d=%d\n", j, i, j*i);
+  printf("아무키나누르시오.\n");
+  getch();
+}
+return0;
+}
