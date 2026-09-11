@@ -1,5 +1,9 @@
 ## 정사각형 만들기
 
+
+코드
+
+
       #include <stdio.h>
   
     void draw_square(int size);
@@ -13,10 +17,10 @@
       scanf("%d", &n);
       draw_square(n);
       return 0;
-  }
+        }
   
-  void draw_square(int size)
-  {
+        void draw_square(int size)
+        {
       int i, j;
       unsigned char a = 0xa6;
       unsigned char b[7];
@@ -31,7 +35,7 @@
       printf("\n");
       
       for(i = 0; i < size; i++)
-      {
+            {
           printf("%c%c", a, b[2]);
           for(j = 0; j < size; j++)
               printf("  ");
@@ -44,4 +48,4 @@
         printf("%c%c", a, b[1]);
     printf("%c%c", a, b[5]);
     printf("\n");
-}
+      }
