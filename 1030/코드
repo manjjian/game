@@ -1,0 +1,746 @@
+/*
+ * Dice Cake Eating Game - Feature Upgrade (27 features)
+ *
+ * [Added features]  Search for the F number to find each one in the code
+ *  F1  Main menu (start / settings / ranking / rules / exit)
+ *  F2  Choose the number of cake pieces (20 / 30 / 40)
+ *  F3  Two-dice mode
+ *  F4  Play against the computer
+ *  F5  Roll to decide who goes first
+ *  F6  Dice effect BONUS : roll one more time
+ *  F7  Dice effect BOMB  : skip the next turn
+ *  F8  ESC returns to the menu
+ *  F9  Show turn count / elapsed time
+ *  F10 Play again (Y/N)
+ *  F11 Win record between the two players
+ *  F12 Ranking file (ranking.txt)
+ *  F13 Longer names (up to 30 bytes)
+ *  F14 Rules menu
+ *  F15 Dice effect chance (off / low / normal / high)
+ *  F16 Reset the ranking
+ *  F17 Computer level (easy / normal / hard)
+ *  F18 Spectate mode (COM vs COM)
+ *  F19 Best-of-three mode
+ *  F20 Turn time limit (auto play after 10 seconds)
+ *  F21 Dice effect GOLD  : eat 3 more pieces
+ *  F22 Dice effect ICE   : opponent's next roll is halved
+ *  F23 Reroll item (once per game, R key)
+ *  F24 Pause (P key)
+ *  F25 Prevent duplicate names
+ *  F26 Fastest win record (best.txt)
+ *  F27 Game log file (game_log.txt)
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <time.h>
+#include <windows.h>
+#include <conio.h>
+
+#define MAX_CAKE        40              /* F2 */
+#define NAME_LEN        31              /* F13 */
+#define ESC_KEY         27              /* F8 */
+#define MAX_RANK        100             /* F12 */
+#define RANK_FILE       "ranking.txt"   /* F12 */
+#define BEST_FILE       "best.txt"      /* F26 */
+#define LOG_FILE        "game_log.txt"  /* F27 */
+#define TIME_LIMIT_SEC  10              /* F20 */
+#define GOLD_EXTRA      3               /* F21 */
+
+/* Special dice effects (one roll gives at most one) */
+#define EF_NONE  0
+#define EF_BONUS 1                      /* F6 */
+#define EF_BOMB  2                      /* F7 */
+#define EF_GOLD  3                      /* F21 */
+#define EF_ICE   4                      /* F22 */
+
+/* Game modes */
+#define MODE_2P       0
+#define MODE_COM      1                 /* F4 */
+#define MODE_SPECTATE 2                 /* F18 */
+
+/* Settings (changed in the settings menu) */
+int cake_number   = 30;                 /* F2 */
+int dice_count    = 1;                  /* F3 */
+int mode          = MODE_2P;            /* F4, F18 */
+int difficulty    = 1;                  /* F17: 0 easy, 1 normal, 2 hard */
+int effect_level  = 2;                  /* F15: 0 off, 1 low, 2 normal, 3 high */
+int best_of_three = 0;                  /* F19 */
+int time_limit    = 0;                  /* F20 */
+
+/* State used during one game */
+int ice_flag[2];                        /* F22: 1 = next roll is halved */
+int reroll_left[2];                     /* F23: rerolls left */
+time_t game_begin;                      /* F9 */
+int paused_total;                       /* F24: paused time is not counted */
+FILE *log_fp = NULL;                    /* F27 */
+
+const char *mode_name[]    = { "2인 대전", "컴퓨터 대전", "관전 (COM vs COM)" };
+const char *level_name[]   = { "쉬움", "보통", "어려움" };
+const char *chance_name[]  = { "끔", "낮음", "보통", "높음" };
+const int   effect_chance[] = { 0, 15, 30, 50 };                     /* F15: percent */
+const char *effect_name[]  = { "", "보너스", "폭탄", "황금", "얼음" };
+
+void intro_game(void);
+int  main_menu(void);
+void settings_menu(void);
+void input_participant(char user_name[][NAME_LEN]);
+int  decide_first(char name[][NAME_LEN]);
+int  play_match(char name[][NAME_LEN], int wins[]);
+int  play_game(char name[][NAME_LEN], int wins[], int *win_turns);
+int  game_control(char name[][NAME_LEN], int condition[], int *left,
+                  int user, int *s, int *e, int wins[]);
+void roll_dice(int user, int *d1, int *d2);
+int  roll_effect(void);
+void eat_pieces(int condition[], int *left, int user, int *s, int *e, int count);
+void cake_display(char name[][NAME_LEN], int condition[], int left, int s, int e, int wins[]);
+int  is_computer(int user);
+int  read_key(void);
+int  wait_key(int next_user);
+void pause_game(void);
+int  elapsed_sec(void);
+int  load_ranking(char names[][NAME_LEN], int counts[]);
+void update_ranking(const char *winner);
+void show_ranking(void);
+int  update_best(const char *name, int turns);
+void gotoxy(int x, int y);
+
+int main(void)
+{
+	char user_name[2][NAME_LEN];
+	int wins[2], winner, choice, again;
+	UINT cp = (sizeof("가") == 4) ? 65001 : 949;   /* match the console to the file encoding */
+
+	SetConsoleOutputCP(cp);
+	SetConsoleCP(cp);
+	srand((unsigned)time(NULL));
+
+	intro_game();
+	while (1)
+	{
+		choice = main_menu();                         /* F1 */
+		if (choice == '1')
+		{
+			input_participant(user_name);
+			wins[0] = wins[1] = 0;                    /* F11 */
+			do
+			{
+				winner = play_match(user_name, wins);
+				if (winner < 0)                       /* F8 */
+					break;
+				wins[winner]++;                       /* F11 */
+				update_ranking(user_name[winner]);    /* F12 */
+
+				gotoxy(10, 16);
+				printf("%s 승리!   전적  %s %d : %d %s",
+				       user_name[winner], user_name[0], wins[0], wins[1], user_name[1]);
+				gotoxy(10, 18);
+				printf("다시 할까요? (Y/N) ");             /* F10 */
+				again = toupper(getch());
+			} while (again == 'Y');
+		}
+		else if (choice == '2')
+			settings_menu();
+		else if (choice == '3')
+			show_ranking();                           /* F12, F16, F26 */
+		else if (choice == '4')
+			intro_game();                             /* F14 */
+		else if (choice == '5')
+			break;
+	}
+	system("cls");
+	printf("안녕히 가세요!\n");
+	return 0;
+}
+
+void intro_game(void)
+{
+	system("cls");
+	printf("주사위 케이크 먹기 게임\n\n");
+	printf("두 사람이 케이크를 양쪽 끝에서부터\n");
+	printf("주사위 눈만큼 먹어 들어갑니다.\n");
+	printf("마지막 조각을 먹는 사람이 이깁니다.\n\n");
+	printf("주사위 특수 효과 (가끔 숫자와 함께 나옵니다)\n");
+	printf("  보너스 : 한 번 더 굴리기\n");
+	printf("  폭탄   : 다음 턴 쉬기\n");
+	printf("  황금   : %d조각 더 먹기\n", GOLD_EXTRA);
+	printf("  얼음   : 상대의 다음 주사위 절반\n\n");
+	printf("키 안내\n");
+	printf("  R   : 다시 굴리기\n");
+	printf("  P   : 일시정지\n");
+	printf("  ESC : 메뉴로 돌아가기\n\n");
+	printf("아무 키나 누르세요...");
+	getch();
+}
+
+/* F1: main menu */
+int main_menu(void)
+{
+	int key;
+	system("cls");
+	printf("===== 주사위 케이크 게임 =====\n\n");
+	printf("  1. 게임 시작\n");
+	printf("  2. 설정\n");
+	printf("  3. 랭킹\n");
+	printf("  4. 규칙 보기\n");                               /* F14 */
+	printf("  5. 종료\n\n");
+	printf("  케이크 %d / 주사위 %d / %s / %s\n\n", cake_number, dice_count,
+	       mode_name[mode], best_of_three ? "3판 2선승" : "단판");
+	printf("선택> ");
+	do
+		key = getch();
+	while (key < '1' || key > '5');
+	return key;
+}
+
+/* Settings menu: each number key cycles to the next value */
+void settings_menu(void)
+{
+	int key;
+	while (1)
+	{
+		system("cls");
+		printf("===== 설정 =====\n\n");
+		printf("  1. 케이크 개수   : %d\n", cake_number);
+		printf("  2. 주사위 개수   : %d\n", dice_count);
+		printf("  3. 모드          : %s\n", mode_name[mode]);
+		printf("  4. 컴퓨터 난이도 : %s\n", level_name[difficulty]);
+		printf("  5. 주사위 효과   : %s (%d%%)\n", chance_name[effect_level], effect_chance[effect_level]);
+		printf("  6. 경기 방식     : %s\n", best_of_three ? "3판 2선승" : "단판");
+		printf("  7. 시간 제한     : %s\n", time_limit ? "턴당 10초" : "끔");
+		printf("  8. 뒤로\n\n");
+		printf("바꿀 번호를 누르세요> ");
+		key = getch();
+		switch (key)
+		{
+		case '1': cake_number = (cake_number == 40) ? 20 : cake_number + 10; break; /* F2 */
+		case '2': dice_count = 3 - dice_count; break;                               /* F3 */
+		case '3': mode = (mode + 1) % 3; break;                                     /* F4, F18 */
+		case '4': difficulty = (difficulty + 1) % 3; break;                         /* F17 */
+		case '5': effect_level = (effect_level + 1) % 4; break;                     /* F15 */
+		case '6': best_of_three = !best_of_three; break;                            /* F19 */
+		case '7': time_limit = !time_limit; break;                                  /* F20 */
+		case '8':
+		case ESC_KEY: return;
+		}
+	}
+}
+
+void input_participant(char user_name[][NAME_LEN])
+{
+	system("cls");
+	if (mode == MODE_SPECTATE)                            /* F18 */
+	{
+		strcpy(user_name[0], "COM1");
+		strcpy(user_name[1], "COM2");
+		printf("관전 모드: COM1 vs COM2\n\n아무 키나 누르세요...");
+		getch();
+		return;
+	}
+
+	do                                                    /* F25 */
+	{
+		printf("1번 플레이어 이름 입력 후 Enter (한글 10자까지)> ");
+		scanf("%30s", user_name[0]);                      /* F13 */
+		if (mode == MODE_COM && strcmp(user_name[0], "COM") == 0)
+			printf("컴퓨터가 쓰는 이름입니다. 다른 이름을 입력하세요.\n");
+	} while (mode == MODE_COM && strcmp(user_name[0], "COM") == 0);
+
+	if (mode == MODE_COM)                                 /* F4 */
+	{
+		strcpy(user_name[1], "COM");
+		return;
+	}
+
+	do                                                    /* F25 */
+	{
+		printf("2번 플레이어 이름 입력 후 Enter (한글 10자까지)> ");
+		scanf("%30s", user_name[1]);
+		if (strcmp(user_name[0], user_name[1]) == 0)
+			printf("1번과 같은 이름입니다. 다른 이름을 입력하세요.\n");
+	} while (strcmp(user_name[0], user_name[1]) == 0);
+}
+
+/* F5: decide who goes first */
+int decide_first(char name[][NAME_LEN])
+{
+	int d0, d1;
+	system("cls");
+	printf("선공 정하기: 주사위가 큰 사람이 먼저 시작합니다.\n\n");
+	do
+	{
+		d0 = rand() % 6 + 1;
+		d1 = rand() % 6 + 1;
+		printf("  %s : %d   vs   %s : %d\n", name[0], d0, name[1], d1);
+		if (d0 == d1)
+			printf("  비겼습니다! 다시 굴립니다.\n");
+	} while (d0 == d1);
+	printf("\n  %s 선공!\n\n", d0 > d1 ? name[0] : name[1]);
+	printf("아무 키나 누르세요...");
+	getch();
+	return d0 > d1 ? 0 : 1;
+}
+
+/* F19: play a single game or best of three. Returns -1 on ESC */
+int play_match(char name[][NAME_LEN], int wins[])
+{
+	int round_win[2] = { 0, 0 }, w, turns;
+	while (1)
+	{
+		w = play_game(name, wins, &turns);
+		if (w < 0)
+			return -1;
+		if (update_best(name[w], turns))                  /* F26 */
+		{
+			gotoxy(10, 15);
+			printf("신기록! %s, %d턴 만에 승리.", name[w], turns);
+		}
+		if (!best_of_three)
+			return w;
+
+		round_win[w]++;
+		gotoxy(10, 17);
+		printf("라운드 점수  %s %d : %d %s", name[0], round_win[0], round_win[1], name[1]);
+		if (round_win[w] == 2)
+			return w;
+		gotoxy(10, 18);
+		printf("아무 키나 누르면 다음 라운드...");
+		getch();
+	}
+}
+
+/* Play one game. Returns the winner, or -1 on ESC */
+int play_game(char name[][NAME_LEN], int wins[], int *win_turns)
+{
+	int condition[MAX_CAKE] = { 0 };
+	int left = cake_number, start = 0, end = cake_number - 1;
+	int skip[2] = { 0, 0 }, my_turns[2] = { 0, 0 }, turn_count = 0, user, effect;
+	char now[32];
+	time_t t;
+
+	ice_flag[0] = ice_flag[1] = 0;                        /* F22 */
+	reroll_left[0] = reroll_left[1] = 1;                  /* F23 */
+	user = decide_first(name);                            /* F5 */
+
+	log_fp = fopen(LOG_FILE, "a");                        /* F27 */
+	t = time(NULL);
+	strftime(now, sizeof(now), "%Y-%m-%d %H:%M", localtime(&t));
+	if (log_fp)
+		fprintf(log_fp, "=== %s  %s vs %s ===\n", now, name[0], name[1]);
+
+	game_begin = time(NULL);                              /* F9 */
+	paused_total = 0;                                     /* F24 */
+
+	system("cls");
+	cake_display(name, condition, left, start, end, wins);
+	gotoxy(10, 14);
+	printf("%s 먼저 시작. 아무 키나 누르세요 (ESC: 메뉴, P: 일시정지)", name[user]);
+	if (wait_key(user))
+		goto quit;
+
+	while (1)
+	{
+		system("cls");
+		if (skip[user])                                   /* F7: skip after rolling a bomb */
+		{
+			skip[user] = 0;
+			effect = EF_NONE;
+			cake_display(name, condition, left, start, end, wins);
+			gotoxy(10, 11);
+			printf("%s, 폭탄 때문에 이번 턴은 쉽니다.", name[user]);
+			if (log_fp)
+				fprintf(log_fp, "  %s 턴 쉼 (폭탄)\n", name[user]);
+		}
+		else
+		{
+			turn_count++;                                 /* F9 */
+			my_turns[user]++;                             /* F26 */
+			effect = game_control(name, condition, &left, user, &start, &end, wins);
+			if (left < 2)                                 /* same win rule as the original */
+				break;
+			gotoxy(10, 12);
+			if (effect == EF_BONUS)
+				printf("보너스: 한 번 더 굴립니다");
+			else if (effect == EF_BOMB)
+			{
+				printf("폭탄: 다음 턴을 쉽니다");
+				skip[user] = 1;
+			}
+			else if (effect == EF_GOLD)
+				printf("황금: %d조각을 더 먹었습니다", GOLD_EXTRA);
+			else if (effect == EF_ICE)
+				printf("얼음: %s의 다음 주사위가 절반이 됩니다", name[1 - user]);
+		}
+
+		gotoxy(10, 13);
+		printf("%d턴   %d초", turn_count, elapsed_sec());
+
+		if (effect != EF_BONUS)                           /* F6: bonus = same player again */
+			user = 1 - user;
+		gotoxy(10, 14);
+		printf("%s 차례. 아무 키나 누르세요 (ESC: 메뉴, P: 일시정지)", name[user]);
+		if (wait_key(user))                               /* F8 */
+			goto quit;
+	}
+
+	*win_turns = my_turns[user];
+	gotoxy(10, 13);
+	printf("총 %d턴, %d초          ", turn_count, elapsed_sec());
+	if (log_fp)
+	{
+		fprintf(log_fp, "  승자: %s (%d턴, %d초)\n\n", name[user], my_turns[user], elapsed_sec());
+		fclose(log_fp);
+		log_fp = NULL;
+	}
+	return user;
+
+quit:
+	if (log_fp)
+	{
+		fprintf(log_fp, "  ESC로 중단\n\n");
+		fclose(log_fp);
+		log_fp = NULL;
+	}
+	return -1;
+}
+
+/* Roll the dice (a number, sometimes with an effect), eat, and return the effect */
+int game_control(char name[][NAME_LEN], int condition[], int *left,
+                 int user, int *s, int *e, int wins[])
+{
+	int d1, d2, dice_number, effect, extra, frozen = 0, rerolled = 0;
+
+	roll_dice(user, &d1, &d2);
+	effect = roll_effect();                               /* F6, F7, F21, F22 */
+
+	if (is_computer(user))
+	{
+		/* F17: on hard, the computer rerolls once if it rolls a bomb */
+		if (difficulty == 2 && effect == EF_BOMB)
+		{
+			roll_dice(user, &d1, &d2);
+			effect = roll_effect();
+			rerolled = 1;
+		}
+	}
+	else if (reroll_left[user] > 0)                       /* F23 */
+	{
+		cake_display(name, condition, *left, *s, *e, wins);
+		gotoxy(10, 11);
+		printf("%s 주사위 %d%s%s.  R: 다시 굴리기 (%d번 남음) / 다른 키: 그대로",
+		       name[user], d1 + d2, effect ? " + " : "", effect_name[effect], reroll_left[user]);
+		if (toupper(read_key()) == 'R')
+		{
+			reroll_left[user]--;
+			roll_dice(user, &d1, &d2);
+			effect = roll_effect();
+			rerolled = 1;
+		}
+		system("cls");
+	}
+
+	dice_number = d1 + d2;
+	if (ice_flag[user])                                   /* F22 */
+	{
+		dice_number = (dice_number + 1) / 2;
+		ice_flag[user] = 0;
+		frozen = 1;
+	}
+	if (dice_number > *left)
+		dice_number = *left;
+	eat_pieces(condition, left, user, s, e, dice_number);
+
+	if (effect == EF_GOLD)                                /* F21 */
+	{
+		extra = (GOLD_EXTRA < *left) ? GOLD_EXTRA : *left;
+		eat_pieces(condition, left, user, s, e, extra);
+	}
+	if (effect == EF_ICE)                                 /* F22 */
+		ice_flag[1 - user] = 1;
+
+	cake_display(name, condition, *left, *s, *e, wins);
+	gotoxy(10, 11);
+	if (dice_count == 2)
+		printf("%s 주사위 %d + %d = %d", name[user], d1, d2, d1 + d2);
+	else
+		printf("%s 주사위 %d", name[user], d1);
+	if (effect != EF_NONE)
+		printf("  [%s]", effect_name[effect]);
+	if (rerolled)
+		printf(" (다시 굴림)");
+	if (frozen)
+		printf(" -> 얼음으로 절반");
+	printf(".");
+
+	if (log_fp)                                           /* F27 */
+		fprintf(log_fp, "  %s 주사위 %d%s%s%s%s, 남은 조각 %d\n",
+		        name[user], d1 + d2, effect ? " " : "", effect_name[effect], rerolled ? " (다시 굴림)" : "",
+		        frozen ? " (얼음)" : "", *left);
+	return effect;
+}
+
+/* F3 + F17: roll the dice. An easy computer only rolls 1-4 */
+void roll_dice(int user, int *d1, int *d2)
+{
+	int max = (is_computer(user) && difficulty == 0) ? 4 : 6;
+	*d1 = rand() % max + 1;
+	*d2 = (dice_count == 2) ? rand() % max + 1 : 0;
+}
+
+/* F15: with the chosen chance, the dice also shows one of the 4 effects */
+int roll_effect(void)
+{
+	if (rand() % 100 >= effect_chance[effect_level])
+		return EF_NONE;
+	return rand() % 4 + 1;                                /* EF_BONUS ~ EF_ICE */
+}
+
+/* Eat count pieces (player 1 from the left, player 2 from the right) */
+void eat_pieces(int condition[], int *left, int user, int *s, int *e, int count)
+{
+	int k;
+	for (k = 0; k < count; k++)
+		condition[(user == 0) ? *s + k : *e - k] = 1;
+	if (user == 0)
+		*s += count;
+	else
+		*e -= count;
+	*left -= count;
+}
+
+void cake_display(char name[][NAME_LEN], int condition[], int left, int s, int e, int wins[])
+{
+	int i;
+	int right_x = 10 + cake_number * 2 - 10;             /* F2: right side follows the cake size */
+
+	gotoxy(30, 5);
+	if (left < 0)
+		left = 0;
+	printf("남은 조각 : %2d ", left);
+
+	gotoxy(10, 6);
+	printf("%s", name[0]);
+	gotoxy(right_x, 6);
+	printf("%s", name[1]);
+
+	for (i = 0; i < cake_number; i++)
+	{
+		gotoxy(10 + i * 2, 8);
+		printf("%s", condition[i] == 1 ? ".." : "[]");
+	}
+
+	gotoxy(10, 9);
+	printf("먹은 개수 : %2d", s);
+	gotoxy(right_x, 9);
+	printf("먹은 개수 : %2d", cake_number - 1 - e);
+
+	for (i = 0; i < 2; i++)                               /* F11, F22, F23 */
+	{
+		gotoxy(i == 0 ? 10 : right_x, 10);
+		printf("승 %d  다시굴림 %d%s", wins[i], reroll_left[i], ice_flag[i] ? "  얼음" : "");
+	}
+}
+
+/* F4, F18 */
+int is_computer(int user)
+{
+	return mode == MODE_SPECTATE || (mode == MODE_COM && user == 1);
+}
+
+/* F20 + F24: read one key. Returns 0 after 10 sec if the time limit is on. P pauses */
+int read_key(void)
+{
+	int key, remain;
+	time_t t0 = time(NULL);
+	while (1)
+	{
+		if (time_limit)
+		{
+			remain = TIME_LIMIT_SEC - (int)difftime(time(NULL), t0);
+			gotoxy(10, 15);
+			printf("%2d초 후 자동  ", remain);
+			if (remain <= 0)
+			{
+				gotoxy(10, 15);
+				printf("                ");
+				return 0;
+			}
+			if (!kbhit())
+			{
+				Sleep(100);
+				continue;
+			}
+		}
+		key = getch();
+		if (key == 'p' || key == 'P')
+		{
+			pause_game();
+			t0 = time(NULL);
+			continue;
+		}
+		if (time_limit)
+		{
+			gotoxy(10, 15);
+			printf("                ");
+		}
+		return key;
+	}
+}
+
+/* Wait for the next turn: automatic for the computer, a key for a person. Returns 1 on ESC */
+int wait_key(int next_user)
+{
+	int key;
+	if (is_computer(next_user))                           /* F4, F18 */
+	{
+		Sleep(1200);
+		while (kbhit())                                   /* ESC and P still work while spectating */
+		{
+			key = getch();
+			if (key == ESC_KEY)
+				return 1;
+			if (key == 'p' || key == 'P')
+				pause_game();
+		}
+		return 0;
+	}
+	return read_key() == ESC_KEY;                         /* F8 */
+}
+
+/* F24: pause. Paused time is subtracted from the elapsed time */
+void pause_game(void)
+{
+	time_t p = time(NULL);
+	gotoxy(10, 15);
+	printf("일시정지 - 아무 키나 누르면 계속");
+	getch();
+	gotoxy(10, 15);
+	printf("                                  ");
+	paused_total += (int)difftime(time(NULL), p);
+}
+
+/* F9 + F24 */
+int elapsed_sec(void)
+{
+	return (int)difftime(time(NULL), game_begin) - paused_total;
+}
+
+/* F12: read "name wins" lines from the file and return how many */
+int load_ranking(char names[][NAME_LEN], int counts[])
+{
+	int n = 0;
+	FILE *fp = fopen(RANK_FILE, "r");
+	if (fp == NULL)
+		return 0;
+	while (n < MAX_RANK && fscanf(fp, "%30s %d", names[n], &counts[n]) == 2)
+		n++;
+	fclose(fp);
+	return n;
+}
+
+/* F12: add one win for the winner and save */
+void update_ranking(const char *winner)
+{
+	char names[MAX_RANK][NAME_LEN];
+	int counts[MAX_RANK], n, i;
+	FILE *fp;
+
+	n = load_ranking(names, counts);
+	for (i = 0; i < n; i++)
+		if (strcmp(names[i], winner) == 0)
+			break;
+	if (i < n)
+		counts[i]++;
+	else if (n < MAX_RANK)
+	{
+		strcpy(names[n], winner);
+		counts[n] = 1;
+		n++;
+	}
+
+	fp = fopen(RANK_FILE, "w");
+	if (fp == NULL)
+		return;
+	for (i = 0; i < n; i++)
+		fprintf(fp, "%s %d\n", names[i], counts[i]);
+	fclose(fp);
+}
+
+/* F12 + F16 + F26: show the ranking and fastest win, with reset */
+void show_ranking(void)
+{
+	char names[MAX_RANK][NAME_LEN], tmp_name[NAME_LEN], best_name[NAME_LEN];
+	int counts[MAX_RANK], n, i, j, tmp, best_turns;
+	FILE *fp;
+
+	n = load_ranking(names, counts);
+	for (i = 0; i < n - 1; i++)                           /* bubble sort */
+		for (j = 0; j < n - 1 - i; j++)
+			if (counts[j] < counts[j + 1])
+			{
+				tmp = counts[j]; counts[j] = counts[j + 1]; counts[j + 1] = tmp;
+				strcpy(tmp_name, names[j]);
+				strcpy(names[j], names[j + 1]);
+				strcpy(names[j + 1], tmp_name);
+			}
+
+	system("cls");
+	printf("===== 랭킹 =====\n\n");
+	if (n == 0)
+		printf("  아직 기록이 없습니다.\n");
+	for (i = 0; i < n && i < 10; i++)
+		printf("  %2d. %-20s %3d승\n", i + 1, names[i], counts[i]);
+
+	printf("\n  최단 승리 : ");                          /* F26 */
+	fp = fopen(BEST_FILE, "r");
+	if (fp != NULL && fscanf(fp, "%30s %d", best_name, &best_turns) == 2)
+		printf("%s, %d턴\n", best_name, best_turns);
+	else
+		printf("없음\n");
+	if (fp != NULL)
+		fclose(fp);
+
+	printf("\nR: 기록 초기화 / 다른 키: 뒤로 ");       /* F16 */
+	if (toupper(getch()) == 'R')
+	{
+		printf("\n모든 기록을 지울까요? (Y/N) ");
+		if (toupper(getch()) == 'Y')
+		{
+			remove(RANK_FILE);
+			remove(BEST_FILE);
+			printf("\n기록을 지웠습니다. 아무 키나 누르세요...");
+			getch();
+		}
+	}
+}
+
+/* F26: save and return 1 if this win took fewer turns */
+int update_best(const char *name, int turns)
+{
+	char best_name[NAME_LEN];
+	int best_turns, has_record = 0;
+	FILE *fp = fopen(BEST_FILE, "r");
+
+	if (fp != NULL)
+	{
+		if (fscanf(fp, "%30s %d", best_name, &best_turns) == 2)
+			has_record = 1;
+		fclose(fp);
+	}
+	if (has_record && turns >= best_turns)
+		return 0;
+
+	fp = fopen(BEST_FILE, "w");
+	if (fp == NULL)
+		return 0;
+	fprintf(fp, "%s %d\n", name, turns);
+	fclose(fp);
+	return 1;
+}
+
+void gotoxy(int x, int y)
+{
+	COORD Pos = { (short)(x - 1), (short)(y - 1) };
+	SetConsoleCursorPosition(GetStdHandle(STD_OUTPUT_HANDLE), Pos);
+}
